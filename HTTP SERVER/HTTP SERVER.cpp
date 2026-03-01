@@ -1,105 +1,118 @@
-// HTTP SERVER.cpp : This file contains the 'main' function. Program execution begins and ends there.
-//
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#pragma comment(lib, "ws2_32.lib")
+#include "HTTP SERVER.h"
 #include <iostream>
-#include <WinSock2.h>
-#include <string>
+#include <memory>
 
-int main()
-{
-    std::cout << "Attempting to create a server..\n";
+HttpServer::HttpServer(const std::string& ip, int p)
+    : serverSocket(INVALID_SOCKET), ipAddress(ip), port(p), running(false) {}
 
-    SOCKET wsocket;
-    SOCKET new_wsocket;
-    WSADATA wsaData;
-    struct sockaddr_in server;
-    int server_len;
-    int BUFFER_SIZE = 30720;
-
-    // initialize
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cout << "Could not initialize";
-    }
-
-    //create a socket
-    wsocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (wsocket == INVALID_SOCKET) {
-        std::cout << "Could not create socket.";
-    }
-
-    //bind socket to address
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = inet_addr("127.0.0.1");
-    server.sin_port = htons(8000);
-    server_len = sizeof(server);
-
-    if (bind(wsocket, (SOCKADDR*)&server, server_len) != 0) {
-        std::cout << "Could not bind socket";
-    }
-
-    //listen to address
-    if (listen(wsocket, 20) != 0) {
-        std::cout << "Could not start listening \n";
-    }
-    std::cout << "Listening on 127.0.0.1:8000 \n";
-
-    int bytes = 0;
-    while (true) {
-        new_wsocket = accept(wsocket, (SOCKADDR*)&server, &server_len);
-        if (new_wsocket == INVALID_SOCKET) {
-            std::cout << "Could not accept connection \n";
-        }
-
-        //read request
-        char buff[30720] = { 0 };
-        bytes = recv(new_wsocket, buff, BUFFER_SIZE, 0);
-
-        if (bytes < 0) {
-            std::cout << "Could not read client request";
-        }
-
-        std::string serverMessage = "HTTP/1.1 200OK\nContent-type: text/html\nContent-Length: ";
-        std::string response = "<html><h1>Hello world</h1></html>";
-
-        serverMessage.append(std::to_string(response.size()));
-        serverMessage.append("\n\n");
-        serverMessage.append(response);
-
-
-        int bytesSent = 0;
-        int totalBytesSent = 0;
-        while (totalBytesSent < serverMessage.size())
-        {
-            std::cout << "SENDING BYTES";
-
-            bytesSent = send(new_wsocket, serverMessage.c_str(), serverMessage.size(), 0);
-            if (bytesSent < 0) {
-                std::cout << "Could not bind socket";
-            }
-
-            totalBytesSent += bytesSent;
-        }
-        std::cout << "Sent response to client";
-
-        closesocket(new_wsocket);
-
-    }
-
-    closesocket(wsocket);
-    WSACleanup();
-
-    return 0;
-
+HttpServer::~HttpServer() {
+    stop();
 }
 
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
+Router& HttpServer::getRouter() {
+    return router;
+}
 
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
+bool HttpServer::initialize() {
+    WSADATA wsaData;
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cout << "Could not initialize Winsock\n";
+        return false;
+    }
+
+    serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (serverSocket == INVALID_SOCKET) {
+        std::cout << "Could not create socket. Error: " << WSAGetLastError() << "\n";
+        WSACleanup();
+        return false;
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr(ipAddress.c_str());
+    serverAddr.sin_port = htons(port);
+
+    if (bind(serverSocket, (SOCKADDR*)&serverAddr, sizeof(serverAddr)) != 0) {
+        std::cout << "Could not bind socket. Error: " << WSAGetLastError() << "\n";
+        closesocket(serverSocket);
+        WSACleanup();
+        return false;
+    }
+
+    if (listen(serverSocket, 20) != 0) {
+        std::cout << "Could not start listening. Error: " << WSAGetLastError() << "\n";
+        closesocket(serverSocket);
+        WSACleanup();
+        return false;
+    }
+
+    std::cout << "Server initialized successfully!\n";
+    return true;
+}
+
+void HttpServer::start() {
+    running = true;
+    std::cout << "Server listening on " << ipAddress << ":" << port << "\n";
+
+    while (running) {
+        int addrLen = sizeof(serverAddr);
+        SOCKET clientSocket = accept(serverSocket, (SOCKADDR*)&serverAddr, &addrLen);
+
+        if (clientSocket == INVALID_SOCKET) {
+            if (running) std::cout << "Accept failed. Error: " << WSAGetLastError() << "\n";
+            continue;
+        }
+
+        std::cout << "Client connected!\n";
+        handleClient(clientSocket);
+    }
+}
+
+void HttpServer::stop() {
+    running = false;
+    if (serverSocket != INVALID_SOCKET) {
+        closesocket(serverSocket);
+        serverSocket = INVALID_SOCKET;
+    }
+    WSACleanup();
+    std::cout << "Server stopped.\n";
+}
+
+void HttpServer::handleClient(SOCKET clientSocket) {
+    std::unique_ptr<char[]> buffer(new char[BUFFER_SIZE]);
+    memset(buffer.get(), 0, BUFFER_SIZE);
+
+    int bytesReceived = recv(clientSocket, buffer.get(), BUFFER_SIZE - 1, 0);
+    if (bytesReceived <= 0) {
+        closesocket(clientSocket);
+        return;
+    }
+
+    buffer[bytesReceived] = '\0';
+    HttpRequest request(buffer.get());
+    request.print();
+
+    HttpResponse response = router.handleRequest(request);
+    sendResponse(clientSocket, response);
+
+    closesocket(clientSocket);
+    std::cout << "Client disconnected.\n\n";
+}
+
+void HttpServer::sendResponse(SOCKET clientSocket, const HttpResponse& response) {
+    std::string responseStr = response.build();
+    int totalBytesSent = 0;
+    int messageSize = static_cast<int>(responseStr.size());
+
+    while (totalBytesSent < messageSize) {
+        int bytesSent = send(clientSocket,
+            responseStr.c_str() + totalBytesSent,
+            messageSize - totalBytesSent, 0);
+
+        if (bytesSent == SOCKET_ERROR) {
+            std::cout << "Send failed. Error: " << WSAGetLastError() << "\n";
+            break;
+        }
+        totalBytesSent += bytesSent;
+    }
+}
