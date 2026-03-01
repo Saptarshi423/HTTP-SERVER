@@ -7,6 +7,7 @@
 FileStorage::FileStorage(const std::string& file) : filename(file) {}
 
 bool FileStorage::save(const std::string& data) {
+    std::unique_lock<std::mutex> lock(fileMutex);
     // Open in append mode
     std::ofstream file(filename, std::ios::app);
     if (!file.is_open()) {
@@ -24,6 +25,7 @@ bool FileStorage::save(const std::string& data) {
 }
 
 std::string FileStorage::readAll() {
+    std::unique_lock<std::mutex> lock(fileMutex);
     std::ifstream file(filename);
     if (!file.is_open()) {
         return "No data saved yet.";

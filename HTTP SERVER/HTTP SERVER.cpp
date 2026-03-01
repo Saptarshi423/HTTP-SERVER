@@ -1,9 +1,11 @@
 #include "HTTP SERVER.h"
 #include <iostream>
 #include <memory>
+#include <algorithm>
 
 HttpServer::HttpServer(const std::string& ip, int p)
-    : serverSocket(INVALID_SOCKET), ipAddress(ip), port(p), running(false) {}
+    : serverSocket(INVALID_SOCKET), ipAddress(ip), port(p), running(false),
+      THREAD_POOL_SIZE(static_cast<int>(std::max(4u, std::thread::hardware_concurrency()))) {}
 
 HttpServer::~HttpServer() {
     stop();
@@ -50,9 +52,32 @@ bool HttpServer::initialize() {
     return true;
 }
 
+void HttpServer::workerLoop() {
+    while (true) {
+        SOCKET clientSocket;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCV.wait(lock, [this] {
+                return !clientQueue.empty() || !running;
+            });
+
+            if (!running && clientQueue.empty()) return;
+
+            clientSocket = clientQueue.front();
+            clientQueue.pop();
+        }
+        handleClient(clientSocket);
+    }
+}
+
 void HttpServer::start() {
     running = true;
     std::cout << "Server listening on " << ipAddress << ":" << port << "\n";
+    std::cout << "Thread pool size: " << THREAD_POOL_SIZE << "\n";
+
+    for (int i = 0; i < THREAD_POOL_SIZE; i++) {
+        workerThreads.emplace_back(&HttpServer::workerLoop, this);
+    }
 
     while (running) {
         int addrLen = sizeof(serverAddr);
@@ -64,12 +89,22 @@ void HttpServer::start() {
         }
 
         std::cout << "Client connected!\n";
-        handleClient(clientSocket);
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            clientQueue.push(clientSocket);
+        }
+        queueCV.notify_one();
+    }
+
+    queueCV.notify_all();
+    for (std::thread& t : workerThreads) {
+        if (t.joinable()) t.join();
     }
 }
 
 void HttpServer::stop() {
     running = false;
+    queueCV.notify_all();
     if (serverSocket != INVALID_SOCKET) {
         closesocket(serverSocket);
         serverSocket = INVALID_SOCKET;
